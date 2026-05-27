@@ -233,22 +233,28 @@ export class AdminAiService {
       });
 
       try {
-        const imageRes = await this.generateImage(
-          groupedContent,
-          payload.commerceCategory,
-          payload.supportingText,
-        );
+        let generatedKeys: string[];
 
-        if (!imageRes?.images?.length) {
-          throw new Error('Nano Banana image generation failed');
-        }
+        if (process.env.MOCK_IMAGE_GEN === 'true') {
+          console.warn('[MOCK_IMAGE_GEN] Skipping Gemini image call — returning uploaded keys.');
+          generatedKeys = payload.imageKeys;
+        } else {
+          const imageRes = await this.generateImage(
+            groupedContent,
+            payload.commerceCategory,
+            payload.supportingText,
+          );
 
-        const generatedKeys: string[] = [];
+          if (!imageRes?.images?.length) {
+            throw new Error('Nano Banana image generation failed');
+          }
 
-        for (const img of imageRes.images) {
-          const key = `generated/${randomUUID()}`;
-          await this.files.putFile(key, img.data, img.mimeType);
-          generatedKeys.push(key);
+          generatedKeys = [];
+          for (const img of imageRes.images) {
+            const key = `generated/${randomUUID()}`;
+            await this.files.putFile(key, img.data, img.mimeType);
+            generatedKeys.push(key);
+          }
         }
 
         await this.inventory.update(
