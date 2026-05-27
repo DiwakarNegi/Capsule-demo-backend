@@ -18,7 +18,9 @@ export class UsersAiController {
     @Validate(UserProcessInventoryDto) payload: UserProcessInventoryDto,
   ) {
     const user = (req as any).user ?? { sub: 'demo', role: 'vendor' };
-    void this.service.processInventory(payload, user);
+    this.service.processInventory(payload, user).catch((err: unknown) => {
+      console.error('[processInventory] pipeline error:', err);
+    });
     return { message: 'Request submitted' };
   }
 }

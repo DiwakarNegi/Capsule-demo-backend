@@ -31,7 +31,9 @@ export class AdminAiController {
   processInventory(
     @Validate(AdminProcessInventoryDto) payload: AdminProcessInventoryDto,
   ) {
-    void this.service.processInventory(payload);
+    this.service.processInventory(payload).catch((err: unknown) => {
+      console.error('[processInventory] pipeline error:', err);
+    });
     return { message: 'Request submitted' };
   }
 }
