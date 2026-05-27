@@ -8,7 +8,6 @@ import { AdminProcessInventoryDto } from '../dtos';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { InventoryRepository } from '@app/src/inventory/repositories';
 import { FilesService } from '@app/core/files/services';
-import { BaseLanguageModelInput } from '@langchain/core/language_models/base';
 import { UsersRepository } from '@app/src/users/repositories';
 import * as z from 'zod';
 import { Categories } from '@app/src/taxonaomy/entities';
@@ -121,58 +120,58 @@ export class AdminAiService {
     const keys = this.app.systemPromptKeys;
     const isMarketplace = commerceCategory === 'marketplace';
 
-    const [systemMsg, variations] = await Promise.all([
-      this.getSystemPrompt(
-        isMarketplace
-          ? keys.marketplaceImageGeneration
-          : keys.lifestyleImageGeneration,
-      ),
-      this.getVariations(
-        isMarketplace
-          ? keys.marketplaceImageVariations
-          : keys.lifestyleImageVariations,
-      ),
-    ]);
+    const variations = await this.getVariations(
+      isMarketplace ? keys.marketplaceImageVariations : keys.lifestyleImageVariations,
+    );
 
-    const batchMessages: BaseLanguageModelInput[] = [];
+    const hfToken = process.env.HF_TOKEN;
+    const model = process.env.HF_IMG2IMG_MODEL ?? 'timbrooks/instruct-pix2pix';
 
-    variations.forEach((variation: string) => {
-      const mixedContent: any[] = [];
+    if (!hfToken) throw new Error('HF_TOKEN is not set — add it to .env');
 
-      if (supportingText) {
-        mixedContent.push({ type: 'text', text: supportingText });
+    const firstImage = content.find((c: any) => c?.type === 'image_url');
+    if (!firstImage) throw new BadRequestException('No image content found');
+    const dataUrl: string = firstImage.image_url.url as string;
+    const base64Source = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+
+    const images: { mimeType: string; data: string }[] = [];
+
+    for (const variation of variations) {
+      const prompt = [supportingText, variation].filter(Boolean).join('. ');
+
+      const response = await fetch(
+        `https://api-inference.huggingface.co/models/${model}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${hfToken}`,
+            'Content-Type': 'application/json',
+            'x-wait-for-model': 'true',
+          },
+          body: JSON.stringify({
+            inputs: base64Source,
+            parameters: {
+              prompt,
+              strength: 0.75,
+              guidance_scale: 7.5,
+              image_guidance_scale: 1.5,
+              num_inference_steps: 20,
+            },
+          }),
+          signal: AbortSignal.timeout(120000),
+        },
+      );
+
+      if (!response.ok) {
+        const err = await response.text().catch(() => response.statusText);
+        throw new Error(`HuggingFace error ${response.status}: ${err}`);
       }
 
-      mixedContent.push({ type: 'text', text: variation });
-
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-      mixedContent.push(...content);
-
-      const messages: BaseLanguageModelInput = [
-        systemMsg,
-        new HumanMessage({ content: mixedContent }),
-      ];
-
-      batchMessages.push(messages);
-    });
-
-    const results = await this.geminiNanoBanana.batch(batchMessages, {
-      timeout: 600000,
-    });
-
-    const images = results.map((msg) => ({
-      mimeType:
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        (msg.content[0] as Record<string, any>).inlineData.mimeType as string,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      data: (msg.content[0] as Record<string, any>).inlineData.data as string,
-    }));
-
-    if (images.length === 0) {
-      throw new BadRequestException(
-        'No images found in Gemini response. Expected AIMessage.content[].inlineData.data to exist.',
-      );
+      const buffer = await response.arrayBuffer();
+      images.push({ mimeType: 'image/jpeg', data: Buffer.from(buffer).toString('base64') });
     }
+
+    if (!images.length) throw new BadRequestException('HuggingFace returned no images');
 
     return { images };
   }
