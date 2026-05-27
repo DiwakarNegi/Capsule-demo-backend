@@ -40,22 +40,25 @@ export class AdminAiService {
 
     const model = process.env.HF_TEXT_MODEL ?? 'mistralai/Mistral-7B-Instruct-v0.3';
 
+    // Use the text-generation task endpoint (broader model support than /v1/chat/completions)
+    const prompt = `<s>[INST] ${systemPrompt}\n\n${userContent} [/INST]`;
+
     const response = await fetch(
-      `https://router.huggingface.co/hf-inference/models/${model}/v1/chat/completions`,
+      `https://router.huggingface.co/hf-inference/models/${model}`,
       {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${hfToken}`,
           'Content-Type': 'application/json',
+          'x-wait-for-model': 'true',
         },
         body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userContent },
-          ],
-          max_tokens: 1024,
-          temperature: 0,
+          inputs: prompt,
+          parameters: {
+            max_new_tokens: 512,
+            return_full_text: false,
+            temperature: 0.1,
+          },
         }),
         signal: AbortSignal.timeout(60000),
       },
@@ -66,10 +69,9 @@ export class AdminAiService {
       throw new Error(`HuggingFace text error ${response.status}: ${err}`);
     }
 
-    const data = await response.json() as { choices: { message: { content: string } }[] };
-    const raw = data.choices[0].message.content;
+    const data = await response.json() as [{ generated_text: string }];
+    const raw = data[0]?.generated_text ?? '';
 
-    // Extract JSON from response — model may wrap it in markdown or add commentary
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error(`HuggingFace text model returned no JSON: ${raw}`);
     return JSON.parse(jsonMatch[0]) as unknown;
