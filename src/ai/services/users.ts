@@ -176,7 +176,7 @@ export class UsersAiService {
       const prompt = [supportingText, variation].filter(Boolean).join('. ');
 
       const response = await fetch(
-        `https://api-inference.huggingface.co/models/${model}`,
+        `https://router.huggingface.co/hf-inference/models/${model}`,
         {
           method: 'POST',
           headers: {
