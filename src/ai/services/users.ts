@@ -161,19 +161,14 @@ export class UsersAiService {
     );
 
     const hfToken = process.env.HF_TOKEN;
-    const model = process.env.HF_IMG2IMG_MODEL ?? 'timbrooks/instruct-pix2pix';
+    const model = process.env.HF_TXT2IMG_MODEL ?? 'black-forest-labs/FLUX.1-schnell';
 
     if (!hfToken) throw new Error('HF_TOKEN is not set — add it to .env');
-
-    const firstImage = content.find((c: any) => c?.type === 'image_url');
-    if (!firstImage) throw new BadRequestException('No image content found');
-    const dataUrl: string = firstImage.image_url.url as string;
-    const base64Source = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
 
     const images: { mimeType: string; data: string }[] = [];
 
     for (const variation of variations) {
-      const prompt = [supportingText, variation].filter(Boolean).join('. ');
+      const prompt = [supportingText, variation].filter(Boolean).join('. ') || 'professional product photo on white background';
 
       const response = await fetch(
         `https://router.huggingface.co/hf-inference/models/${model}`,
@@ -184,16 +179,7 @@ export class UsersAiService {
             'Content-Type': 'application/json',
             'x-wait-for-model': 'true',
           },
-          body: JSON.stringify({
-            inputs: base64Source,
-            parameters: {
-              prompt,
-              strength: 0.75,
-              guidance_scale: 7.5,
-              image_guidance_scale: 1.5,
-              num_inference_steps: 20,
-            },
-          }),
+          body: JSON.stringify({ inputs: prompt }),
           signal: AbortSignal.timeout(120000),
         },
       );
