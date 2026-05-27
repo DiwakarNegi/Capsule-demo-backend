@@ -63,47 +63,38 @@ export class UsersAiService {
     return value.split(',').map((v) => v.trim());
   }
 
-  private async callHfText(systemPrompt: string, userContent: string): Promise<any> {
-    const hfToken = process.env.HF_TOKEN;
-    if (!hfToken) throw new Error('HF_TOKEN is not set — add it to .env');
+  private async callGroqText(systemPrompt: string, userContent: string): Promise<any> {
+    const groqKey = process.env.GROQ_API_KEY;
+    if (!groqKey) throw new Error('GROQ_API_KEY is not set — add it to .env');
 
-    const model = process.env.HF_TEXT_MODEL ?? 'mistralai/Mistral-7B-Instruct-v0.3';
+    const model = process.env.GROQ_TEXT_MODEL ?? 'llama-3.1-8b-instant';
 
-    // Use the text-generation task endpoint (broader model support than /v1/chat/completions)
-    const prompt = `<s>[INST] ${systemPrompt}\n\n${userContent} [/INST]`;
-
-    const response = await fetch(
-      `https://router.huggingface.co/hf-inference/models/${model}`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${hfToken}`,
-          'Content-Type': 'application/json',
-          'x-wait-for-model': 'true',
-        },
-        body: JSON.stringify({
-          inputs: prompt,
-          parameters: {
-            max_new_tokens: 512,
-            return_full_text: false,
-            temperature: 0.1,
-          },
-        }),
-        signal: AbortSignal.timeout(60000),
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${groqKey}`,
+        'Content-Type': 'application/json',
       },
-    );
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        max_tokens: 1024,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
 
     if (!response.ok) {
       const err = await response.text().catch(() => response.statusText);
-      throw new Error(`HuggingFace text error ${response.status}: ${err}`);
+      throw new Error(`Groq error ${response.status}: ${err}`);
     }
 
-    const data = await response.json() as [{ generated_text: string }];
-    const raw = data[0]?.generated_text ?? '';
-
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error(`HuggingFace text model returned no JSON: ${raw}`);
-    return JSON.parse(jsonMatch[0]) as unknown;
+    const data = await response.json() as { choices: { message: { content: string } }[] };
+    return JSON.parse(data.choices[0].message.content) as unknown;
   }
 
   private async generateText(
@@ -129,7 +120,7 @@ export class UsersAiService {
       JSON.stringify(categories),
     ].join('\n');
 
-    const result = await this.callHfText(systemPrompt, userContent) as {
+    const result = await this.callGroqText(systemPrompt, userContent) as {
       title: string;
       description: string;
       brandId: number;
