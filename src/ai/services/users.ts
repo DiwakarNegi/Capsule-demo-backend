@@ -67,7 +67,7 @@ export class UsersAiService {
     const hfToken = process.env.HF_TOKEN;
     if (!hfToken) throw new Error('HF_TOKEN is not set — add it to .env');
 
-    const model = process.env.HF_TEXT_MODEL ?? 'Qwen/Qwen2.5-72B-Instruct';
+    const model = process.env.HF_TEXT_MODEL ?? 'mistralai/Mistral-7B-Instruct-v0.3';
 
     const response = await fetch(
       `https://router.huggingface.co/hf-inference/models/${model}/v1/chat/completions`,
@@ -85,7 +85,6 @@ export class UsersAiService {
           ],
           max_tokens: 1024,
           temperature: 0,
-          response_format: { type: 'json_object' },
         }),
         signal: AbortSignal.timeout(60000),
       },
@@ -97,7 +96,12 @@ export class UsersAiService {
     }
 
     const data = await response.json() as { choices: { message: { content: string } }[] };
-    return JSON.parse(data.choices[0].message.content) as unknown;
+    const raw = data.choices[0].message.content;
+
+    // Extract JSON from response — model may wrap it in markdown or add commentary
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error(`HuggingFace text model returned no JSON: ${raw}`);
+    return JSON.parse(jsonMatch[0]) as unknown;
   }
 
   private async generateText(
