@@ -1,15 +1,11 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
-import aiConfig from '@config/ai';
 import appConfig from '@config/app';
 import { ConfigType, getConfigToken } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { UserProcessInventoryDto } from '../dtos';
-import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { InventoryRepository } from '@app/src/inventory/repositories';
 import { FilesService } from '@app/core/files/services';
 import { UsersRepository } from '@app/src/users/repositories';
-import * as z from 'zod';
 import { Categories } from '@app/src/taxonaomy/entities';
 import { BrandsRepository } from '@app/src/brands/repositories';
 import { CategoriesRepository } from '@app/src/taxonaomy/repositories';
@@ -21,12 +17,7 @@ import { Brands } from '@app/src/brands/entities';
 
 @Injectable()
 export class UsersAiService {
-  private geminiText: ChatGoogleGenerativeAI;
-  private geminiNanoBanana: ChatGoogleGenerativeAI;
-
   constructor(
-    @Inject(getConfigToken('ai'))
-    private readonly ai: ConfigType<typeof aiConfig>,
     @Inject(getConfigToken('app'))
     private readonly app: ConfigType<typeof appConfig>,
     private readonly inventory: InventoryRepository,
@@ -36,26 +27,12 @@ export class UsersAiService {
     private readonly files: FilesService,
     private readonly prompts: PromptsRepository,
     private readonly dataSource: DataSource,
-  ) {
-    this.geminiText = new ChatGoogleGenerativeAI({
-      apiKey: ai.gemini.apiKey,
-      model: ai.gemini.textModel,
-      temperature: 0,
-      maxOutputTokens: 4096,
-    });
-    this.geminiNanoBanana = new ChatGoogleGenerativeAI({
-      apiKey: ai.gemini.apiKey,
-      model: ai.gemini.imageModel,
-      temperature: 0,
-    });
-  }
+  ) {}
 
   private async getOrCreateDemoVendor(): Promise<Users> {
-    // Try to find any existing user
     const existing = await this.vendor.findOne({ where: {} });
     if (existing) return existing;
 
-    // Create a demo vendor user if none exists
     const user = this.dataSource.getRepository(Users).create({
       name: 'Demo Vendor',
       countryCode: '+91',
@@ -76,22 +53,54 @@ export class UsersAiService {
     });
   }
 
-  private async getSystemPrompt(key: string): Promise<SystemMessage> {
-    const prompt = await this.prompts.findOneOrFail({
-      where: { promptKey: key },
-    });
-    return new SystemMessage(prompt.promptValue);
+  private async getPromptValue(key: string): Promise<string> {
+    const prompt = await this.prompts.findOneOrFail({ where: { promptKey: key } });
+    return prompt.promptValue;
   }
 
   private async getVariations(key: string): Promise<string[]> {
-    const prompt = await this.prompts.findOneOrFail({
-      where: { promptKey: key },
-    });
-    return prompt.promptValue.split(',').map((v) => v.trim());
+    const value = await this.getPromptValue(key);
+    return value.split(',').map((v) => v.trim());
+  }
+
+  private async callHfText(systemPrompt: string, userContent: string): Promise<any> {
+    const hfToken = process.env.HF_TOKEN;
+    if (!hfToken) throw new Error('HF_TOKEN is not set — add it to .env');
+
+    const model = process.env.HF_TEXT_MODEL ?? 'Qwen/Qwen2.5-72B-Instruct';
+
+    const response = await fetch(
+      `https://router.huggingface.co/hf-inference/models/${model}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${hfToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent },
+          ],
+          max_tokens: 1024,
+          temperature: 0,
+          response_format: { type: 'json_object' },
+        }),
+        signal: AbortSignal.timeout(60000),
+      },
+    );
+
+    if (!response.ok) {
+      const err = await response.text().catch(() => response.statusText);
+      throw new Error(`HuggingFace text error ${response.status}: ${err}`);
+    }
+
+    const data = await response.json() as { choices: { message: { content: string } }[] };
+    return JSON.parse(data.choices[0].message.content) as unknown;
   }
 
   private async generateText(
-    content: Array<any>,
     categories: Partial<Categories[]>,
     supportingText?: string,
   ): Promise<{
@@ -100,52 +109,33 @@ export class UsersAiService {
     brandId: number;
     categoryId: number;
   }> {
-    const systemMsgText = await this.getSystemPrompt(
-      this.app.systemPromptKeys.textGeneration,
-    );
+    const systemPrompt = await this.getPromptValue(this.app.systemPromptKeys.textGeneration);
 
-    const mixedContent: any[] = [];
-
-    const instructionText = [
-      supportingText ? 'USER INPUT:\n' + supportingText + '\n' : '',
+    const userContent = [
+      supportingText ? `USER INPUT:\n${supportingText}\n` : '',
       'You will be provided a list of allowed categories with IDs.',
-      'Return categoryId as the best matching IDs from the given lists.',
-      'ONLY choose IDs from the provided lists.',
-      'If you cannot confidently match, set the ID to the FIRST item from the list supplied.',
-      'Return output ONLY as JSON matching the schema (no markdown).',
+      'Return categoryId as the best matching ID from the given list.',
+      'ONLY choose IDs from the provided list.',
+      'If you cannot confidently match, set categoryId to the FIRST item from the list.',
+      'Return output ONLY as a JSON object with keys: title, description, brandId, categoryId.',
       '',
       'Allowed categories JSON:',
       JSON.stringify(categories),
     ].join('\n');
 
-    mixedContent.push({ type: 'text', text: instructionText });
-    mixedContent.push(...content);
+    const result = await this.callHfText(systemPrompt, userContent) as {
+      title: string;
+      description: string;
+      brandId: number;
+      categoryId: number;
+    };
 
-    const messages = [
-      systemMsgText,
-      new HumanMessage({ content: mixedContent }),
-    ];
-
-    const inventorySchema = z.object({
-      title: z.string().describe('Title of the inventory item'),
-      description: z.string().describe('Description of the inventory item'),
-      brandId: z.int().describe('ID from allowed brands list'),
-      categoryId: z.int().describe('ID from allowed categories list'),
-    });
-
-    const structuredLlm = this.geminiText.withStructuredOutput(
-      inventorySchema,
-      { name: 'Inventory Schema', includeRaw: false },
-    );
-
-    // Filter out image content for structured output - use text description only
-    const textOnly = mixedContent.filter((c: any) => c && c.type === 'text');
-    const textMessages = [
-      systemMsgText,
-      new HumanMessage({ content: textOnly.length > 0 ? textOnly : [{ type: 'text', text: 'Home decor product. Generate a title and description.' }] }),
-    ];
-
-    return structuredLlm.invoke(textMessages, { timeout: 600000 });
+    return {
+      title: String(result.title ?? 'Product'),
+      description: String(result.description ?? ''),
+      brandId: Number(result.brandId ?? 0),
+      categoryId: Number(result.categoryId ?? categories[0]?.id ?? 1),
+    };
   }
 
   private async generateImage(
@@ -227,22 +217,13 @@ export class UsersAiService {
       } as any);
     }
 
-    let groupingResult: { groups: { groupId: string; imageIndexes: number[]; reasoning: string }[] } | null = null;
-    try {
-      groupingResult = await this.groupImagesByProduct(content);
-    } catch {
-      // Fallback: treat all images as one group
-      groupingResult = { groups: [{ groupId: 'group-0', imageIndexes: content.map((_, i) => i), reasoning: 'fallback' }] };
-    }
-
-    if (!groupingResult?.groups?.length) {
-      groupingResult = { groups: [{ groupId: 'group-0', imageIndexes: content.map((_, i) => i), reasoning: 'fallback' }] };
-    }
+    // Without a vision model, treat all images as one group
+    const groupingResult = {
+      groups: [{ groupId: 'group-0', imageIndexes: content.map((_, i) => i), reasoning: 'single-group' }],
+    };
 
     for (const group of groupingResult.groups) {
-      const groupedContent = group.imageIndexes.map(
-        (index: number) => content[index],
-      );
+      const groupedContent = group.imageIndexes.map((index: number) => content[index]);
 
       const inventoryItem = await this.inventory.createAndSave({
         title: 'Processing',
@@ -259,7 +240,7 @@ export class UsersAiService {
         let generatedKeys: string[];
 
         if (process.env.MOCK_IMAGE_GEN === 'true') {
-          console.warn('[MOCK_IMAGE_GEN] Skipping Gemini image call — returning uploaded keys.');
+          console.warn('[MOCK_IMAGE_GEN] Skipping image gen — returning uploaded keys.');
           generatedKeys = payload.imageKeys;
         } else {
           const imageRes = await this.generateImage(
@@ -269,7 +250,7 @@ export class UsersAiService {
           );
 
           if (!imageRes?.images?.length) {
-            throw new Error('Nano Banana image generation failed');
+            throw new Error('Image generation failed');
           }
 
           generatedKeys = [];
@@ -285,11 +266,7 @@ export class UsersAiService {
           { imageKeys: generatedKeys, generationStatus: 'Image generation done' },
         );
 
-        const textRes = await this.generateText(
-          groupedContent,
-          categoriesArr,
-          payload.supportingText,
-        );
+        const textRes = await this.generateText(categoriesArr, payload.supportingText);
 
         if (!textRes) throw new Error('Text generation failed');
 
@@ -312,40 +289,5 @@ export class UsersAiService {
         throw err;
       }
     }
-  }
-
-  private async groupImagesByProduct(content: Array<any>) {
-    const systemMsgGrouping = await this.getSystemPrompt(
-      this.app.systemPromptKeys.imageGroupGeneration,
-    );
-
-    const groupingSchema = z.object({
-      groups: z.array(
-        z.object({
-          groupId: z.string(),
-          imageIndexes: z.array(z.number()),
-          reasoning: z.string(),
-        }),
-      ),
-    });
-
-    const messages = [
-      systemMsgGrouping,
-      new HumanMessage({
-        content: [
-          {
-            type: 'text',
-            text: 'You will receive multiple product images. Group them by SAME physical product. Index images starting from 0 in the order received.',
-          },
-          ...content,
-        ],
-      }),
-    ];
-
-    const structured = this.geminiText.withStructuredOutput(groupingSchema, {
-      name: 'ImageGroupingSchema',
-    });
-
-    return structured.invoke(messages, { timeout: 600000 });
   }
 }
