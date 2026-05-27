@@ -261,8 +261,29 @@ export class UsersAiService {
       });
 
       try {
-        // Use original uploaded image keys directly (skip AI image generation)
-        const generatedKeys: string[] = payload.imageKeys;
+        let generatedKeys: string[];
+
+        if (process.env.MOCK_IMAGE_GEN === 'true') {
+          console.warn('[MOCK_IMAGE_GEN] Skipping Gemini image call — returning uploaded keys.');
+          generatedKeys = payload.imageKeys;
+        } else {
+          const imageRes = await this.generateImage(
+            groupedContent,
+            payload.commerceCategory,
+            payload.supportingText,
+          );
+
+          if (!imageRes?.images?.length) {
+            throw new Error('Nano Banana image generation failed');
+          }
+
+          generatedKeys = [];
+          for (const img of imageRes.images) {
+            const key = `generated/${randomUUID()}`;
+            await this.files.putFile(key, img.data, img.mimeType);
+            generatedKeys.push(key);
+          }
+        }
 
         await this.inventory.update(
           { id: inventoryItem.id },
