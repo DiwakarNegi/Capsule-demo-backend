@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { ChatVertexAI } from '@langchain/google-vertexai';
 import aiConfig from '@config/ai';
 import appConfig from '@config/app';
 import { ConfigType, getConfigToken } from '@nestjs/config';
@@ -18,8 +18,8 @@ import * as z from 'zod';
 
 @Injectable()
 export class CapsuleAiService {
-  private geminiText: ChatGoogleGenerativeAI;
-  private geminiImage: ChatGoogleGenerativeAI;
+  private geminiText: ChatVertexAI;
+  private geminiImage: ChatVertexAI;
 
   constructor(
     @Inject(getConfigToken('ai'))
@@ -33,16 +33,16 @@ export class CapsuleAiService {
     private readonly prompts: PromptsRepository,
     private readonly inventory: InventoryRepository,
   ) {
-    this.geminiText = new ChatGoogleGenerativeAI({
-      apiKey: ai.gemini.apiKey,
+    this.geminiText = new ChatVertexAI({
       model: ai.gemini.textModel,
+      location: 'us-central1',
       temperature: 0,
       maxOutputTokens: 1024,
     });
-    this.geminiImage = new ChatGoogleGenerativeAI({
-      apiKey: ai.gemini.apiKey,
+    this.geminiImage = new ChatVertexAI({
       model: ai.gemini.imageModel,
-      temperature: 0,
+      location: 'us-central1',
+      temperature: 1,
     });
   }
 
@@ -104,9 +104,9 @@ export class CapsuleAiService {
               text: `User request: ${userPrompt}\n\nAnalyse the room image and the user's request. Determine what furniture/items need to be replaced or added, how many items are needed, and generate specific search terms to find matching products in our inventory.`,
             },
             roomImageContent,
-          ],
+          ] as any[],
         }),
-      ],
+      ] as any[],
       { timeout: 60000 },
     );
   }
@@ -182,28 +182,28 @@ export class CapsuleAiService {
               ].join('\n'),
             },
             roomImageContent,
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             ...productImageContents,
-          ],
+          ] as any[],
         }),
-      ],
+      ] as any[],
       { timeout: 600000 },
     );
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const image = (result.content[0] as Record<string, any>).inlineData;
+    // ChatVertexAI returns generated images as { type: 'image_url', image_url: 'data:<mime>;base64,<data>' }
+    // — image_url is a data-URL STRING here, not an object with .url/.inlineData.
+    const part = result.content[0] as Record<string, any>;
+    const dataUrl = typeof part?.image_url === 'string' ? (part.image_url as string) : undefined;
+    const match = dataUrl?.match(/^data:([^;]+);base64,(.+)$/);
 
-    if (!image) {
+    if (!match) {
       throw new BadRequestException(
         'No image generated from redesign step. Check Gemini image model response.',
       );
     }
 
     return {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      mimeType: image.mimeType as string,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      data: image.data as string,
+      mimeType: match[1],
+      data: match[2],
     };
   }
 

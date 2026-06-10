@@ -79,9 +79,10 @@ const smsValidation = {
 };
 
 const aiValidation = {
-  GEMINI_API_KEY: joi.string().required(),
+  GEMINI_API_KEY: joi.string().allow('').default(''),
   GEMINI_MODEL_TEXT: joi.string().required(),
   GEMINI_MODEL_NANO_BANANA: joi.string().required(),
+  GOOGLE_CLOUD_PROJECT: joi.string().required(),
 };
 
 export const configValidation = {

@@ -1,98 +1,294 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Sirhaana Services
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+NestJS backend for the Sirhaana AI product-image pipeline. Accepts a raw product photo and returns 4 lifestyle/studio variants with the product identity preserved, using Gemini 2.5 Flash for vision analysis and `gemini-2.5-flash-image` (true image-to-image editing) for scene generation.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## Prerequisites
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- **Node.js 18+** and npm
+- **MySQL 8+** running locally (or a remote host)
+- **Redis** running locally (default port 6379)
+- **Google Cloud account** with Vertex AI enabled (see section below)
+- **gcloud CLI** installed — [install guide](https://cloud.google.com/sdk/docs/install)
 
-## Project setup
+---
+
+## 1. Clone and install
 
 ```bash
-$ npm install
+git clone <repo-url>
+cd sirhaana-services-develop
+npm install
 ```
 
-## Compile and run the project
+---
+
+## 2. Environment variables
+
+Copy the example and fill in every value:
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+cp .env.example .env
 ```
 
-## Run tests
+If `.env.example` doesn't exist, create `.env` from scratch with the variables below.
+
+### App
+
+```env
+APP_NAME=sirhaana-services
+APP_PORT=6000
+APP_ENV=local                         # local | development | production
+APP_DEBUG=true
+APP_URL=http://localhost:6000
+ACTIVATE_OTP=false
+USER_DELETION_PROMPT=some-prompt-string
+```
+
+### Database (MySQL)
+
+```env
+DB_TYPE=mysql
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=your-mysql-password
+DB_NAME=sirhaana
+```
+
+### Redis
+
+```env
+CACHE_HOST=localhost
+CACHE_PORT=6379
+CACHE_USERNAME=
+CACHE_PASSWORD=
+CACHE_SENDER=0
+CACHE_PREFIX=
+```
+
+### JWT
+
+```env
+JWT_SECRET=a-long-random-secret-at-least-12-chars
+JWT_TTL=1h
+```
+
+### AI — Vertex AI / Gemini (required for image generation)
+
+```env
+GOOGLE_CLOUD_PROJECT=your-gcp-project-id    # see Section 3 below
+GEMINI_MODEL_TEXT=gemini-2.5-flash
+GEMINI_MODEL_NANO_BANANA=gemini-2.5-flash-image
+GEMINI_API_KEY=                              # leave blank — app uses ADC, not an API key
+```
+
+### File storage (local disk — AWS vars are required by validation but not actually used)
+
+```env
+AWS_REGION=ap-south-1
+AWS_BUCKET=sirhaana
+AWS_KEY_ID=placeholder
+AWS_KEY_SECRET=placeholder
+```
+
+> Uploaded and generated images are stored under `uploads/` in the project root. No real S3 bucket is needed.
+
+### Super admin seed values
+
+```env
+SUPER_ADMIN_UUID=super-admin
+SUPER_ADMIN_NAME=Super Admin
+SUPER_ADMIN_EMAIL=admin@yourdomain.com
+SUPER_ADMIN_COUNTRY_CODE=+91
+SUPER_ADMIN_MOBILE_NUMBER=9999999999
+```
+
+### SMTP (required by schema — use any values for local dev if you don't need email)
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_USERNAME=you@gmail.com
+SMTP_PASSWORD=your-app-password
+SMTP_SENDER=you@gmail.com
+```
+
+### SMS — MSG91 (required by schema)
+
+```env
+MSG91_HOST=https://api.msg91.com
+MSG91_AUTHKEY=your-msg91-authkey
+MSG91_TEMPLATE_ID=your-template-id
+```
+
+---
+
+## 3. Google Cloud setup (Vertex AI)
+
+The AI pipeline calls Vertex AI via **Application Default Credentials (ADC)** — no API key is needed. The steps below take about 5 minutes.
+
+### Step 1 — Create or pick a project
+
+Go to [console.cloud.google.com](https://console.cloud.google.com), open the project dropdown at the top, and either create a new project or pick an existing one.
+
+Copy the **Project ID** (not the project name — the ID looks like `my-project-123456` or `sirhaana-ai`). This goes in `GOOGLE_CLOUD_PROJECT`.
+
+### Step 2 — Enable the Vertex AI API
+
+In the console, go to **APIs & Services → Library**, search for **Vertex AI API**, and click **Enable**.
+
+Or run:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+gcloud services enable aiplatform.googleapis.com --project=YOUR_PROJECT_ID
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### Step 3 — Authenticate with gcloud (developer machine)
 
 ```bash
-$ npm install -g mau
-$ mau deploy
+gcloud auth login                                    # signs in your Google account
+gcloud auth application-default login               # sets up ADC credentials the app reads
+gcloud config set project YOUR_PROJECT_ID           # sets the active project
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+After running `application-default login`, a credentials JSON is written to:
+- **Mac/Linux**: `~/.config/gcloud/application_default_credentials.json`
+- **Windows**: `%APPDATA%\gcloud\application_default_credentials.json`
 
-## Resources
+The `@langchain/google-vertexai` library automatically picks this up — nothing else needed.
 
-Check out a few resources that may come in handy when working with NestJS:
+### Step 4 — Verify your project ID
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```bash
+gcloud projects list
+```
 
-## Support
+Find your project in the list. The value in the **PROJECT_ID** column is what goes in `GOOGLE_CLOUD_PROJECT`.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+### Alternative — service account key (for CI or shared machines)
 
-## Stay in touch
+If you need credentials that aren't tied to your personal account:
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+1. Go to **IAM & Admin → Service Accounts** → Create service account
+2. Grant it the **Vertex AI User** role
+3. Create a JSON key and download it
+4. Set the env var:
 
-## License
+```env
+GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/key.json
+```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+The app will use this file automatically instead of the gcloud ADC file.
+
+### Models used
+
+| Variable | Value | What it does |
+|---|---|---|
+| `GEMINI_MODEL_TEXT` | `gemini-2.5-flash` | Vision analysis, product description, output verification |
+| `GEMINI_MODEL_NANO_BANANA` | `gemini-2.5-flash-image` | Image-to-image scene editing |
+
+Both models are in the `us-central1` region — make sure your project has quota there (it does by default).
+
+---
+
+## 4. Database setup
+
+### Create the database
+
+```sql
+CREATE DATABASE sirhaana CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+### Run migrations
+
+```bash
+npm run migrate:up
+```
+
+### Seed initial data (categories, prompts, brand)
+
+```bash
+npm run seed:local
+```
+
+This seeds product categories, all AI system prompts, and a demo brand. It is idempotent — safe to run multiple times.
+
+### Seed roles and super admin
+
+```bash
+npm run cli -- init:super-admin
+```
+
+---
+
+## 5. Run the app
+
+```bash
+# development (watch mode — restarts on file changes)
+npm run start:dev
+
+# production
+npm run build
+npm run start:prod
+```
+
+The server starts on `http://localhost:6000` (or whatever `APP_PORT` is set to).
+
+---
+
+## 6. Key endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/v1/ai/process-inventory` | Upload a product photo → generate 4 lifestyle variants |
+| `POST` | `/v1/media/upload` | Pre-signed upload URL for images |
+| `GET` | `/v1/media/file/:key` | Serve a stored image |
+| `POST` | `/v1/ai/capsules/generate` | Room redesign (Capsule feature) |
+
+### Process inventory payload
+
+```json
+{
+  "imageKeys": ["uploads/your-image-key"],
+  "commerceCategory": "lifestyle",
+  "supportingText": "optional vendor note about the product",
+  "productWidth": 150,
+  "productLength": 150,
+  "productDimensionUnit": "cm"
+}
+```
+
+`productWidth`, `productLength`, and `productDimensionUnit` are optional. When provided, the AI gets an explicit aspect-ratio anchor which prevents it from stretching or squashing the product in the generated scenes.
+
+---
+
+## 7. Skipping image generation during development
+
+Set `MOCK_IMAGE_GEN=true` in `.env` to skip all Gemini calls and return the uploaded image keys directly. Useful when testing the API plumbing without burning credits.
+
+```env
+MOCK_IMAGE_GEN=true
+```
+
+---
+
+## 8. Troubleshooting
+
+**`Error: Could not load the default credentials`**
+Run `gcloud auth application-default login` and make sure `GOOGLE_CLOUD_PROJECT` is set correctly.
+
+**`RESOURCE_EXHAUSTED` / 429 from Vertex AI**
+The `gemini-2.5-flash-image` model has per-minute quota limits. The pipeline has built-in retry with 30-second backoff and 12-second inter-call delays. If you consistently hit limits, wait a minute and retry, or request a quota increase in the GCP console under **IAM & Admin → Quotas**.
+
+**`No categories found. Please seed categories.`**
+Run `npm run seed:local` — the categories table is empty.
+
+**`Prompts not defined` / AI returns generic output**
+Run `npm run seed:local` — system prompts are missing from the DB.
+
+**MySQL connection refused**
+Make sure MySQL is running and `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` are correct in `.env`.
+
+**Redis connection refused**
+Make sure Redis is running on `CACHE_HOST:CACHE_PORT`.

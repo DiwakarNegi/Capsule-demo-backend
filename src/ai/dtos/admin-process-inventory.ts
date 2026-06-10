@@ -3,6 +3,7 @@ import {
   IsArray,
   IsIn,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
 } from 'class-validator';
@@ -49,4 +50,20 @@ export class AdminProcessInventoryDto {
   @Expose()
   @IsIn(['lifestyle', 'marketplace'])
   commerceCategory: string;
+
+  @IsNumber()
+  @IsOptional()
+  @Expose()
+  productWidth?: number;
+
+  @IsNumber()
+  @IsOptional()
+  @Expose()
+  productLength?: number;
+
+  @IsString()
+  @IsOptional()
+  @Expose()
+  @IsIn(['cm', 'inch'])
+  productDimensionUnit?: string;
 }
